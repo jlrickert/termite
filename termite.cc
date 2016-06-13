@@ -881,16 +881,16 @@ gboolean key_press_cb(VteTerminal *vte, GdkEventKey *event, keybind_info *info) 
             case GDK_KEY_l:
                 move(vte, &info->select, 1, 0);
                 break;
-            case GDK_KEY_b:
+            case GDK_KEY_w:
                 move_backward_word(vte, &info->select);
                 break;
-            case GDK_KEY_B:
+            case GDK_KEY_W:
                 move_backward_blank_word(vte, &info->select);
                 break;
-            case GDK_KEY_w:
-                move_forward_word(vte, &info->select);
+            case GDK_KEY_e:
+                move_forward_blank_word(vte, &info->select);
                 break;
-            case GDK_KEY_W:
+            case GDK_KEY_E:
                 move_forward_blank_word(vte, &info->select);
                 break;
             case GDK_KEY_e:
@@ -987,10 +987,6 @@ gboolean key_press_cb(VteTerminal *vte, GdkEventKey *event, keybind_info *info) 
             case GDK_KEY_t:
                 launch_in_directory(vte);
                 return TRUE;
-            case GDK_KEY_space:
-            case GDK_KEY_nobreakspace: // shift-space on some keyboard layouts
-                enter_command_mode(vte, &info->select);
-                return TRUE;
             case GDK_KEY_x:
                 enter_command_mode(vte, &info->select);
                 find_urls(vte, &info->panel);
@@ -1022,6 +1018,16 @@ gboolean key_press_cb(VteTerminal *vte, GdkEventKey *event, keybind_info *info) 
                (modifiers == (GDK_CONTROL_MASK|GDK_MOD1_MASK|GDK_SHIFT_MASK))) {
         if (modify_key_feed(event, info, modify_meta_table))
             return TRUE;
+    } else if (modifiers == GDK_MOD1_MASK) {
+        switch (gdk_keyval_to_lower(event->keyval)) {
+            case GDK_KEY_space:
+            case GDK_KEY_nobreakspace: // shift-space on some keyboard layouts
+                enter_command_mode(vte, &info->select);
+                return TRUE;
+            default:
+                if (modify_key_feed(event, info, modify_table))
+                    return TRUE;
+        }
     } else if (modifiers == GDK_CONTROL_MASK) {
         switch (gdk_keyval_to_lower(event->keyval)) {
             case GDK_KEY_Tab:
