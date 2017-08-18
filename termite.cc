@@ -32,6 +32,9 @@
 #include <gtk/gtk.h>
 #include <vte/vte.h>
 
+#define PCRE2_CODE_UNIT_WIDTH 8
+#include <pcre2.h>
+
 #ifdef GDK_WINDOWING_X11
 #include <gdk/gdkx.h>
 #endif
@@ -672,7 +675,7 @@ static void move_to_eol(VteTerminal *vte, select_info *select) {
 }
 
 template<typename F>
-static void move_forward(VteTerminal *vte, select_info *select, F is_word) {
+static void move_forward(VteTerminal *vte, select_info *select, F is_word, bool goto_word_end) {
     long cursor_col, cursor_row;
     vte_terminal_get_cursor_position(vte, &cursor_col, &cursor_row);
 
@@ -698,15 +701,24 @@ static void move_forward(VteTerminal *vte, select_info *select, F is_word) {
 
     bool end_of_word = false;
 
-    for (long i = 1; i < length; i++) {
-        if (is_word(codepoints[i - 1])) {
-            if (end_of_word) {
+    if (!goto_word_end) {
+        for (long i = 1; i < length; i++) {
+            if (is_word(codepoints[i - 1])) {
+                if (end_of_word) {
+                    break;
+                }
+            } else {
+                end_of_word = true;
+            }
+            cursor_col++;
+        }
+    } else {
+        for (long i = 2; i <= length; i++) {
+            cursor_col++;
+            if (is_word(codepoints[i - 1]) && !is_word(codepoints[i])) {
                 break;
             }
-        } else {
-            end_of_word = true;
         }
-        cursor_col++;
     }
     vte_terminal_set_cursor_position(vte, cursor_col, cursor_row);
     update_selection(vte, select);
@@ -714,12 +726,20 @@ static void move_forward(VteTerminal *vte, select_info *select, F is_word) {
     g_free(codepoints);
 }
 
+static void move_forward_end_word(VteTerminal *vte, select_info *select) {
+    move_forward(vte, select, is_word_char, true);
+}
+
+static void move_forward_end_blank_word(VteTerminal *vte, select_info *select) {
+    move_forward(vte, select, std::not1(std::ref(g_unichar_isspace)), true);
+}
+
 static void move_forward_word(VteTerminal *vte, select_info *select) {
-    move_forward(vte, select, is_word_char);
+    move_forward(vte, select, is_word_char, false);
 }
 
 static void move_forward_blank_word(VteTerminal *vte, select_info *select) {
-    move_forward(vte, select, std::not1(std::ref(g_unichar_isspace)));
+    move_forward(vte, select, std::not1(std::ref(g_unichar_isspace)), false);
 }
 
 /* {{{ CALLBACKS */
@@ -850,6 +870,12 @@ gboolean key_press_cb(VteTerminal *vte, GdkEventKey *event, keybind_info *info) 
             case GDK_KEY_E:
                 move_forward_blank_word(vte, &info->select);
                 break;
+            case GDK_KEY_e:
+                move_forward_end_word(vte, &info->select);
+                break;
+            case GDK_KEY_E:
+                move_forward_end_blank_word(vte, &info->select);
+                break;
             case GDK_KEY_0:
             case GDK_KEY_Home:
                 set_cursor_column(vte, &info->select, 0);
@@ -940,6 +966,9 @@ gboolean key_press_cb(VteTerminal *vte, GdkEventKey *event, keybind_info *info) 
                 return TRUE;
             case GDK_KEY_r:
                 reload_config();
+                return TRUE;
+            case GDK_KEY_l:
+                vte_terminal_reset(vte, TRUE, TRUE);
                 return TRUE;
             default:
                 if (modify_key_feed(event, info, modify_table))
@@ -1182,10 +1211,13 @@ GtkTreeModel *create_completion_model(VteTerminal *vte) {
 void search(VteTerminal *vte, const char *pattern, bool reverse) {
     auto terminal_search = reverse ? vte_terminal_search_find_previous : vte_terminal_search_find_next;
 
-    GRegex *regex = vte_terminal_search_get_gregex(vte);
-    if (regex) g_regex_unref(regex);
-    regex = g_regex_new(pattern, (GRegexCompileFlags)0, (GRegexMatchFlags)0, nullptr);
-    vte_terminal_search_set_gregex(vte, regex, (GRegexMatchFlags)0);
+    VteRegex *regex = vte_terminal_search_get_regex(vte);
+    if (regex) vte_regex_unref(regex);
+    vte_terminal_search_set_regex(vte,
+                    vte_regex_new_for_search(pattern,
+                                    (gssize) strlen(pattern),
+                                    PCRE2_MULTILINE | PCRE2_CASELESS,
+                                    nullptr), 0);
 
     if (!terminal_search(vte)) {
         vte_terminal_unselect_all(vte);
@@ -1348,25 +1380,35 @@ static void load_config(GtkWindow *window, VteTerminal *vte, config_info *info,
                         char **geometry, char **icon) {
     const std::string default_path = "/termite/config";
     GKeyFile *config = g_key_file_new();
+    GError *error = nullptr;
 
     gboolean loaded = FALSE;
 
     if (info->config_file) {
         loaded = g_key_file_load_from_file(config,
                                            info->config_file,
-                                           G_KEY_FILE_NONE, nullptr);
+                                           G_KEY_FILE_NONE, &error);
+        if (!loaded)
+            g_printerr("%s parsing failed: %s\n", info->config_file,
+                       error->message);
     }
 
     if (!loaded) {
         loaded = g_key_file_load_from_file(config,
                                            (g_get_user_config_dir() + default_path).c_str(),
-                                           G_KEY_FILE_NONE, nullptr);
+                                           G_KEY_FILE_NONE, &error);
+        if (!loaded)
+            g_printerr("%s parsing failed: %s\n", (g_get_user_config_dir() + default_path).c_str(),
+                       error->message);
     }
 
     for (const char *const *dir = g_get_system_config_dirs();
          !loaded && *dir; dir++) {
         loaded = g_key_file_load_from_file(config, (*dir + default_path).c_str(),
-                                           G_KEY_FILE_NONE, nullptr);
+                                           G_KEY_FILE_NONE, &error);
+        if (!loaded)
+            g_printerr("%s parsing failed: %s\n", (*dir + default_path).c_str(),
+                       error->message);
     }
 
     if (loaded) {
@@ -1417,12 +1459,12 @@ static void set_config(GtkWindow *window, VteTerminal *vte, config_info *info,
     }
 
     if (info->clickable_url) {
-        info->tag = vte_terminal_match_add_gregex(vte,
-            g_regex_new(url_regex,
-                        (GRegexCompileFlags)(G_REGEX_CASELESS | G_REGEX_MULTILINE),
-                        G_REGEX_MATCH_NOTEMPTY,
-                        nullptr),
-            (GRegexMatchFlags)0);
+        info->tag = vte_terminal_match_add_regex(vte,
+                vte_regex_new_for_match(url_regex,
+                                        (gssize) strlen(url_regex),
+                                        PCRE2_MULTILINE | PCRE2_NOTEMPTY,
+                                        nullptr),
+                0);
         vte_terminal_match_set_cursor_type(vte, info->tag, GDK_HAND2);
     } else if (info->tag != -1) {
         vte_terminal_match_remove(vte, info->tag);
@@ -1486,11 +1528,15 @@ static void exit_with_success(VteTerminal *) {
 }
 
 static char *get_user_shell_with_fallback() {
-    if (const char *env = g_getenv("SHELL"))
-        return g_strdup(env);
+    if (const char *env = g_getenv("SHELL") ) {
+        if (!((env != NULL) && (env[0] == '\0')))
+            return g_strdup(env);
+    }
 
-    if (char *command = vte_get_user_shell())
-        return command;
+    if (char *command = vte_get_user_shell()) {
+        if (!((command != NULL) && (command[0] == '\0')))
+           return command;
+    }
 
     return g_strdup("/bin/sh");
 }
