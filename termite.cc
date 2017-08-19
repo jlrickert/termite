@@ -870,12 +870,6 @@ gboolean key_press_cb(VteTerminal *vte, GdkEventKey *event, keybind_info *info) 
             case GDK_KEY_E:
                 move_forward_blank_word(vte, &info->select);
                 break;
-            case GDK_KEY_e:
-                move_forward_end_word(vte, &info->select);
-                break;
-            case GDK_KEY_E:
-                move_forward_end_blank_word(vte, &info->select);
-                break;
             case GDK_KEY_0:
             case GDK_KEY_Home:
                 set_cursor_column(vte, &info->select, 0);
