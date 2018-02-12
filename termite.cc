@@ -42,7 +42,6 @@
 #include "url_regex.hh"
 #include "util/clamp.hh"
 #include "util/maybe.hh"
-#include "util/memory.hh"
 
 using namespace std::placeholders;
 
@@ -161,9 +160,9 @@ static void overlay_show(search_panel_info *info, overlay_mode mode, VteTerminal
 static void get_vte_padding(VteTerminal *vte, int *left, int *top, int *right, int *bottom);
 static char *check_match(VteTerminal *vte, GdkEventButton *event);
 static void load_config(GtkWindow *window, VteTerminal *vte, GtkWidget *scrollbar, GtkWidget *hbox,
-                        config_info *info, char **geometry, char **icon, bool *show_scrollbar);
+                        config_info *info, char **icon, bool *show_scrollbar);
 static void set_config(GtkWindow *window, VteTerminal *vte, GtkWidget *scrollbar, GtkWidget *hbox,
-                       config_info *info, char **geometry, char **icon, bool *show_scrollbar,
+                       config_info *info, char **icon, bool *show_scrollbar,
                        GKeyFile *config);
 static long first_row(VteTerminal *vte);
 
@@ -297,18 +296,18 @@ static void launch_in_directory(VteTerminal *vte) {
         g_printerr("no directory uri set\n");
         return;
     }
-    auto dir = make_unique(g_filename_from_uri(uri, nullptr, nullptr), g_free);
+    auto dir = std::make_unique<gchar*>(g_filename_from_uri(uri, nullptr, nullptr));
     char term[] = "termite"; // maybe this should be argv[0]
     char *cmd[] = {term, nullptr};
-    g_spawn_async(dir.get(), cmd, nullptr, G_SPAWN_SEARCH_PATH, nullptr, nullptr, nullptr, nullptr);
+    g_spawn_async(*dir.get(), cmd, nullptr, G_SPAWN_SEARCH_PATH, nullptr, nullptr, nullptr, nullptr);
 }
 
 static void find_urls(VteTerminal *vte, search_panel_info *panel_info) {
     GRegex *regex = g_regex_new(url_regex, G_REGEX_CASELESS, G_REGEX_MATCH_NOTEMPTY, nullptr);
     GArray *attributes = g_array_new(FALSE, FALSE, sizeof(VteCharAttributes));
-    auto content = make_unique(vte_terminal_get_text(vte, nullptr, nullptr, attributes), g_free);
+    auto content = std::make_unique<gchar*>(vte_terminal_get_text(vte, nullptr, nullptr, attributes));
 
-    for (char *s_ptr = content.get(), *saveptr; ; s_ptr = nullptr) {
+    for (char *s_ptr = *content.get(), *saveptr; ; s_ptr = nullptr) {
         const char *token = strtok_r(s_ptr, "\n", &saveptr);
         if (!token) {
             break;
@@ -323,7 +322,7 @@ static void find_urls(VteTerminal *vte, search_panel_info *panel_info) {
             g_match_info_fetch_pos(info, 0, &pos, nullptr);
 
             const long first_row = g_array_index(attributes, VteCharAttributes, 0).row;
-            const auto attr = g_array_index(attributes, VteCharAttributes, token + pos - content.get());
+            const auto attr = g_array_index(attributes, VteCharAttributes, token + pos - *content.get());
 
             panel_info->url_list.emplace_back(g_match_info_fetch(info, 0),
                                               attr.column,
@@ -570,9 +569,9 @@ static void open_selection(char *browser, VteTerminal *vte) {
     }
 
     if (browser) {
-        auto selection = make_unique(vte_terminal_get_selection(vte), g_free);
+        auto selection = std::make_unique<gchar*>(vte_terminal_get_selection(vte));
         if (selection && *selection) {
-            launch_browser(browser, selection.get());
+            launch_browser(browser, *selection.get());
         }
     } else {
         g_printerr("no browser to open url\n");
@@ -927,7 +926,11 @@ gboolean key_press_cb(VteTerminal *vte, GdkEventKey *event, keybind_info *info) 
                 toggle_visual(vte, &info->select, vi_mode::visual_line);
                 break;
             case GDK_KEY_y:
+#if VTE_CHECK_VERSION(0, 50, 0)
+                vte_terminal_copy_clipboard_format(vte, VTE_FORMAT_TEXT);
+#else
                 vte_terminal_copy_clipboard(vte);
+#endif
                 break;
             case GDK_KEY_slash:
                 overlay_show(&info->panel, overlay_mode::search, vte);
@@ -985,7 +988,11 @@ gboolean key_press_cb(VteTerminal *vte, GdkEventKey *event, keybind_info *info) 
                 exit_command_mode(vte, &info->select);
                 return TRUE;
             case GDK_KEY_c:
+#if VTE_CHECK_VERSION(0, 50, 0)
+                vte_terminal_copy_clipboard_format(vte, VTE_FORMAT_TEXT);
+#else
                 vte_terminal_copy_clipboard(vte);
+#endif
                 return TRUE;
             case GDK_KEY_v:
                 vte_terminal_paste_clipboard(vte);
@@ -1175,21 +1182,21 @@ gboolean position_overlay_cb(GtkBin *overlay, GtkWidget *widget, GdkRectangle *a
 gboolean button_press_cb(VteTerminal *vte, GdkEventButton *event, const config_info *info) {
     if (info->clickable_url && event->type == GDK_BUTTON_PRESS) {
 #if VTE_CHECK_VERSION (0, 49, 1)
-        auto match = make_unique(vte_terminal_hyperlink_check_event(vte, (GdkEvent*)event), g_free);
+        auto match = std::make_unique<gchar*>(vte_terminal_hyperlink_check_event(vte, (GdkEvent*)event));
         if (!match) {
-            match = make_unique(check_match(vte, event), g_free);
+            match = std::make_unique<gchar*>(check_match(vte, event));
         }
 #else
-        auto match = make_unique(check_match(vte, event), g_free);
+        auto match = std::make_unique<gchar*>(check_match(vte, event));
 #endif
         if (!match)
             return FALSE;
 
         if (event->button == 1) {
-            launch_browser(info->browser, match.get());
+            launch_browser(info->browser, *match.get());
         } else if (event->button == 3) {
             GtkClipboard *clipboard = gtk_clipboard_get(GDK_SELECTION_CLIPBOARD);
-            gtk_clipboard_set_text(clipboard, match.get(), -1);
+            gtk_clipboard_set_text(clipboard, *match.get(), -1);
         }
 
         return TRUE;
@@ -1410,7 +1417,7 @@ static void load_theme(GtkWindow *window, VteTerminal *vte, GKeyFile *config, hi
 }
 
 static void load_config(GtkWindow *window, VteTerminal *vte, GtkWidget *scrollbar,
-                        GtkWidget *hbox, config_info *info, char **geometry, char **icon,
+                        GtkWidget *hbox, config_info *info, char **icon,
                         bool *show_scrollbar) {
     const std::string default_path = "/termite/config";
     GKeyFile *config = g_key_file_new();
@@ -1446,19 +1453,14 @@ static void load_config(GtkWindow *window, VteTerminal *vte, GtkWidget *scrollba
     }
 
     if (loaded) {
-        set_config(window, vte, scrollbar, hbox, info, geometry, icon, show_scrollbar, config);
+        set_config(window, vte, scrollbar, hbox, info, icon, show_scrollbar, config);
     }
     g_key_file_free(config);
 }
 
 static void set_config(GtkWindow *window, VteTerminal *vte, GtkWidget *scrollbar, GtkWidget *hbox,
-                       config_info *info, char **geometry, char **icon, bool *show_scrollbar_ptr,
+                       config_info *info, char **icon, bool *show_scrollbar_ptr,
                        GKeyFile *config) {
-    if (geometry) {
-        if (auto s = get_config_string(config, "options", "geometry")) {
-            *geometry = *s;
-        }
-    }
 
     auto cfg_bool = [config](const char *key, gboolean value) {
         return get_config<gboolean>(g_key_file_get_boolean,
@@ -1617,7 +1619,7 @@ int main(int argc, char **argv) {
     gboolean version = FALSE, hold = FALSE;
 
     GOptionContext *context = g_option_context_new(nullptr);
-    char *role = nullptr, *geometry = nullptr, *execute = nullptr, *config_file = nullptr;
+    char *role = nullptr, *execute = nullptr, *config_file = nullptr;
     char *title = nullptr, *icon = nullptr;
     bool show_scrollbar = false;
     const GOptionEntry entries[] = {
@@ -1626,7 +1628,6 @@ int main(int argc, char **argv) {
         {"role", 'r', 0, G_OPTION_ARG_STRING, &role, "The role to use", "ROLE"},
         {"title", 't', 0, G_OPTION_ARG_STRING, &title, "Window title", "TITLE"},
         {"directory", 'd', 0, G_OPTION_ARG_STRING, &directory, "Change to directory", "DIRECTORY"},
-        {"geometry", 0, 0, G_OPTION_ARG_STRING, &geometry, "Window geometry", "GEOMETRY"},
         {"hold", 0, 0, G_OPTION_ARG_NONE, &hold, "Remain open after child process exits", nullptr},
         {"config", 'c', 0, G_OPTION_ARG_STRING, &config_file, "Path of config file", "CONFIG"},
         {"icon", 'i', 0, G_OPTION_ARG_STRING, &icon, "Icon", "ICON"},
@@ -1706,11 +1707,11 @@ int main(int argc, char **argv) {
     };
 
     load_config(GTK_WINDOW(window), vte, scrollbar, hbox, &info.config,
-                geometry ? nullptr : &geometry, icon ? nullptr : &icon, &show_scrollbar);
+                icon ? nullptr : &icon, &show_scrollbar);
 
     reload_config = [&]{
         load_config(GTK_WINDOW(window), vte, scrollbar, hbox, &info.config,
-                    nullptr, nullptr, nullptr);
+                    nullptr, nullptr);
     };
     signal(SIGUSR1, [](int){ reload_config(); });
 
@@ -1770,15 +1771,6 @@ int main(int argc, char **argv) {
         } else {
             window_title_cb(vte, &info.config.dynamic_title);
         }
-    }
-
-    if (geometry) {
-        gtk_widget_show_all(panel_overlay);
-        gtk_widget_show_all(info.panel.entry);
-        if (!gtk_window_parse_geometry(GTK_WINDOW(window), geometry)) {
-            g_printerr("invalid geometry string: %s\n", geometry);
-        }
-        g_free(geometry);
     }
 
     if (icon) {
